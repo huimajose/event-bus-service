@@ -1,0 +1,7 @@
+{
+    "python.defaultInterpreterPath": "c:/Users/teuuser/event-bus-service/venv/Scripts/python.exe",
+    "python.analysis.extraPaths": [
+        "./venv/Lib/site-packages"
+    ],
+    "python.analysis.typeCheckingMode": "basic"
+}
