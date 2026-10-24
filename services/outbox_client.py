@@ -23,8 +23,9 @@ class OutboxClient:
                 or urlparse(self.base_url).scheme != 'https'):
             raise OutboxUnavailable()
         now = int(time.time())
+        scope = 'events.inbox' if action == 'receive-notification' else 'events.outbox'
         token = jwt.encode({'sub': 'EVENT-BUS-SERVICE', 'actor_type': 'service',
-                            'token_kind': 'service_access', 'scopes': ['events.outbox'],
+                            'token_kind': 'service_access', 'scopes': [scope],
                             'iat': now, 'exp': now + 60, 'iss': 'osie-event-bus',
                             'aud': 'osie-dbm-outbox'}, self.secret, algorithm='HS256')
         try:
@@ -55,6 +56,12 @@ class OutboxClient:
         if 'event' not in data or (data['event'] is not None and not isinstance(data['event'], dict)):
             raise OutboxUnavailable()
         return data['event']
+
+    def receive_notification(self, channel, message):
+        data = self._post('receive-notification', {'channel': channel, 'message': message})
+        if data.get('event_id') != message['event_id'] or type(data.get('duplicate')) is not bool:
+            raise OutboxUnavailable()
+        return data
 
     def complete(self, event_id, lease, outcome, timetoken=None):
         data = self._post('complete', {'event_id': event_id, 'lease_token': lease,

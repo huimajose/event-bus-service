@@ -130,6 +130,17 @@ def test_conflict_and_unavailable_are_distinct(monkeypatch):
     assert str(caught.value) == ''
 
 
+def test_inbox_client_uses_distinct_scope_and_validates_receipt(monkeypatch):
+    def post(url, **kwargs):
+        assert url.endswith('/receive-notification')
+        claims = jwt.decode(kwargs['headers']['Authorization'][7:], SECRET,
+                            algorithms=['HS256'], audience='osie-dbm-outbox', issuer='osie-event-bus')
+        assert claims['scopes'] == ['events.inbox']
+        return Mock(status_code=200, json=lambda: {'event_id': EVENT_ID, 'duplicate': True})
+    monkeypatch.setattr(requests, 'post', post)
+    assert client().receive_notification(CHANNEL, record()['event']['message'])['duplicate'] is True
+
+
 @pytest.mark.parametrize('cfg', [{}, {'DATABASE_MANAGER_URL': 'http://dbm', 'EVENT_BUS_OUTBOX_SECRET': SECRET}])
 def test_configuration_fails_closed(cfg, monkeypatch):
     transport = Mock()

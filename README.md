@@ -76,10 +76,32 @@ producer policy/PubNub grants, review historical credentials, start DBM then bus
 and worker. No .env autoload/debug. Previously versioned .env/bytecode are removed
 from the new tree, not history. Secret values were not read for these changes.
 
-Still pending: transactional outbox at the clinical producer, consumer inbox and
+Still pending: transactional outbox at the clinical producer, live subscriber with durable replay cursor and
 permissions, hospital/portal integration, durable audit, capacity/rate limiting,
 retention and administrative DLQ replay. Existing rejected payloads remain rejected.
 
 Rollback: stop the worker and preserve its table. Prefer secured phase-1 code over
 the original anonymous publisher. Phase 1 changes HTTP semantics back to synchronous
 publish and does not drain the queue. Never drop retained events or reset IDs.
+
+## Notification receipt adapter (prepared, not a live subscriber)
+
+NotificationInboxConsumer validates SDK publisher metadata, channel, producer policy,
+exact schema and source, then calls DBM receive-notification using scope events.inbox.
+Publisher metadata is not cryptographic proof: DBM independently requires the entire
+canonical envelope to match an admitted event in PROCESSING/PUBLISHED state.
+Unknown, modified or pending-unpublished events are rejected. Repeated receipt of
+the same event returns duplicate=true without another inbox row or domain action.
+The inbox is a technical transport record, NOT a clinical delivery receipt.
+
+Requires migration026 in addition to025. The same dedicated internal bus credential
+is used, but inbox and outbox JWT scopes cannot call each other's endpoints.
+The old subscriber remains disabled. No live subscription/cursor/replay is activated:
+a callback must persist successfully before advancing a durable cursor, and reconnect
+must recover earlier messages. This remains a deployment gate, as do restricted
+PubNub subscriber grants and authenticated hospital reads.
+
+Current local evidence:75 bus tests and24 DBM API tests pass;12 sequential SQL tests
+pass against isolated PGlite. Three concurrency cases still require native Postgres16.
+PGlite multiplexing is not accepted as concurrency certification. No real PubNub or
+clinical data was used. The previous CI result does not certify these new commits.
