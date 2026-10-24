@@ -1,23 +1,30 @@
-from flask import Flask, request, jsonify
-from pubnub_client import publish_message
+from flask import Flask, jsonify
+from werkzeug.exceptions import HTTPException
 
-app = Flask(__name__)
+from config import Config
+from routes.event_routes import event_bp
 
-@app.route("/publish", methods=["POST"])
-def publish():
-    data = request.get_json(silent=True) or {}  # garante dict
-    channel = data.get("channel")
-    message = data.get("message")
-    if not channel or not message:
-        return jsonify({"error": "channel e message são obrigatórios"}), 400
-    
-    result = publish_message(channel, message)
-    return jsonify({
-        "status": "ok",
-        "channel": channel,
-        "message": message,
-        "timetoken": result.timetoken
-    })
 
-if __name__ == "__main__":
-    app.run(port=5000, debug=True)
+def create_app(config=None, outbox=None):
+    app = Flask(__name__)
+    app.config.from_object(Config)
+    if config:
+        app.config.update(config)
+    app.extensions['event_outbox'] = outbox
+    app.register_blueprint(event_bp)
+
+    @app.get('/health')
+    def health():
+        return jsonify(status='ok', service='event-bus-service')
+
+    @app.errorhandler(HTTPException)
+    def http_error(error):
+        return jsonify(error=error.name.lower().replace(' ', '_')), error.code
+
+    return app
+
+
+app = create_app()
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=False)

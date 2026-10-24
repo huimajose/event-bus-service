@@ -1,20 +1,7 @@
-from pubnub.pubnub import PubNub
-from pubnub.pnconfiguration import PNConfiguration
-from pubnub.callbacks import SubscribeCallback
-from config import Config
+"""Legacy unauthenticated, payload-printing subscriber has been retired.
 
-pnconfig = PNConfiguration()
-pnconfig.publish_key = Config.PUBNUB_PUBLISH_KEY # type: ignore
-pnconfig.subscribe_key = Config.PUBNUB_SUBSCRIBE_KEY # type: ignore
-pnconfig.uuid = "subscriber-service"
-
-pubnub = PubNub(pnconfig)
-
-class Listener(SubscribeCallback):
-    def message(self, pubnub, message):
-        print(f"[{message.channel}] {message.message}")
-
-pubnub.add_listener(Listener())
-
-# Escuta múltiplos canais
-pubnub.subscribe().channels(["hospital", "patient", "alerts"]).execute()
+Production consumers require scoped PubNub access and a persistent inbox.
+They will be implemented with the hospital integration, not this publisher gate.
+"""
+if __name__ == '__main__':
+    raise SystemExit('Subscriber not configured: authenticated consumers and inbox pending.')
