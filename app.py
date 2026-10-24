@@ -5,12 +5,12 @@ from config import Config
 from routes.event_routes import event_bp
 
 
-def create_app(config=None, publisher=None):
+def create_app(config=None, outbox=None):
     app = Flask(__name__)
     app.config.from_object(Config)
     if config:
         app.config.update(config)
-    app.extensions['event_publisher'] = publisher
+    app.extensions['event_outbox'] = outbox
     app.register_blueprint(event_bp)
 
     @app.get('/health')

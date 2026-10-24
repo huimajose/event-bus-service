@@ -1,7 +1,7 @@
 from flask import Blueprint, current_app, jsonify, request
 
-from pubnub_client import PubNubPublisher, PublishUnavailable
 from services.event_service import EventError, authenticate, validate_event
+from services.outbox_client import OutboxClient, OutboxConflict, OutboxUnavailable
 
 
 event_bp = Blueprint('event', __name__)
@@ -16,14 +16,16 @@ def publish():
         current_app.logger.warning('event_rejected code=%s', error.code)
         return jsonify(error=error.code), error.status
 
-    publisher = current_app.extensions.get('event_publisher')
-    if publisher is None:
-        publisher = PubNubPublisher(current_app.config)
-        current_app.extensions['event_publisher'] = publisher
+    outbox = current_app.extensions.get('event_outbox')
+    if outbox is None:
+        outbox = OutboxClient(current_app.config)
+        current_app.extensions['event_outbox'] = outbox
     try:
-        timetoken = publisher.publish(channel, event)
-    except PublishUnavailable:
-        current_app.logger.warning('event_publish_unavailable producer=%s event_id=%s', subject, event['event_id'])
-        return jsonify(error='event_publish_unavailable', event_id=event['event_id']), 503
-    current_app.logger.info('event_published producer=%s event_id=%s channel=%s', subject, event['event_id'], channel)
-    return jsonify(status='published', event_id=event['event_id'], timetoken=timetoken), 200
+        record = outbox.enqueue(channel, event)
+    except OutboxConflict:
+        return jsonify(error='event_id_conflict'), 409
+    except OutboxUnavailable:
+        current_app.logger.warning('event_enqueue_unavailable producer=%s event_id=%s', subject, event['event_id'])
+        return jsonify(error='event_enqueue_unavailable', event_id=event['event_id']), 503
+    current_app.logger.info('event_persisted producer=%s event_id=%s channel=%s', subject, event['event_id'], channel)
+    return jsonify(status='accepted', event_id=event['event_id'], state=record['status']), 202

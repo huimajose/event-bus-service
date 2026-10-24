@@ -8,6 +8,7 @@ import pytest
 
 from app import create_app
 from pubnub_client import PubNubPublisher, PublishUnavailable
+from services.outbox_client import OutboxUnavailable
 
 
 SECRET = 'synthetic-event-bus-test-secret-32-bytes'
@@ -18,7 +19,7 @@ OTHER = 'osie.network.osie-demo.organization.hml.events'
 @pytest.fixture
 def setup():
     publisher = Mock()
-    publisher.publish.return_value = '1234567890'
+    publisher.enqueue.return_value = {'event_id': '04d633de-5de5-49bd-8cc1-b521f1edb0fa', 'status': 'PENDING'}
     config = {'TESTING': True, 'EVENT_BUS_PRODUCERS': json.dumps({
         'hospital-hml': {'secret': SECRET, 'organization_id': 'HML',
                          'channels': [CHANNEL], 'event_types': ['clinical.access.requested']},
@@ -53,19 +54,19 @@ def send(client, body=None, bearer=None):
 def test_publish_derives_source_and_does_not_echo_message(setup):
     client, publisher, _ = setup
     response = send(client)
-    assert response.status_code == 200
-    channel, event = publisher.publish.call_args.args
+    assert response.status_code == 202
+    channel, event = publisher.enqueue.call_args.args
     assert channel == CHANNEL
     assert event['source_organization_id'] == 'HML'
     assert event['producer'] == 'hospital-hml'
     assert event['schema_version'] == 1
-    assert set(response.json) == {'status', 'event_id', 'timetoken'}
+    assert set(response.json) == {'status', 'event_id', 'state'}
 
 
 def test_no_token_never_publishes(setup):
     client, publisher, _ = setup
     assert client.post('/publish', json=payload()).status_code == 401
-    publisher.publish.assert_not_called()
+    publisher.enqueue.assert_not_called()
 
 
 @pytest.mark.parametrize('claims', [
@@ -77,7 +78,7 @@ def test_no_token_never_publishes(setup):
 def test_invalid_identity_rejected(setup, claims):
     client, publisher, _ = setup
     assert send(client, bearer=token(**claims)).status_code == 401
-    publisher.publish.assert_not_called()
+    publisher.enqueue.assert_not_called()
 
 
 def test_bad_signature(setup):
@@ -85,7 +86,7 @@ def test_bad_signature(setup):
     claims = jwt.decode(token(), options={'verify_signature': False})
     wrong = jwt.encode(claims, 'another-synthetic-secret-at-least-32-bytes', algorithm='HS256')
     assert send(client, bearer=wrong).status_code == 401
-    publisher.publish.assert_not_called()
+    publisher.enqueue.assert_not_called()
 
 
 @pytest.mark.parametrize('channel', [OTHER, 'hospital.blocks', '*', CHANNEL + '.extra', None, []])
@@ -94,7 +95,7 @@ def test_channel_boundary(setup, channel):
     body = payload()
     body['channel'] = channel
     assert send(client, body).status_code == 403
-    publisher.publish.assert_not_called()
+    publisher.enqueue.assert_not_called()
 
 
 @pytest.mark.parametrize('extra', ['name', 'phone', 'email', 'patient_id', 'resource', 'source_organization_id'])
@@ -103,14 +104,14 @@ def test_clinical_or_identity_fields_rejected(setup, extra):
     body = payload()
     body['message'][extra] = 'must-not-be-published'
     assert send(client, body).status_code == 400
-    publisher.publish.assert_not_called()
+    publisher.enqueue.assert_not_called()
 
 
 @pytest.mark.parametrize('body', [[], 'text', {}, {'channel': CHANNEL}, {'channel': CHANNEL, 'message': []}])
 def test_invalid_json_shape(setup, body):
     client, publisher, _ = setup
     assert send(client, body).status_code == 400
-    publisher.publish.assert_not_called()
+    publisher.enqueue.assert_not_called()
 
 
 def test_null_json(setup):
@@ -118,7 +119,7 @@ def test_null_json(setup):
     response = client.post('/publish', data='null', content_type='application/json',
                            headers={'Authorization': 'Bearer ' + token()})
     assert response.status_code == 400
-    publisher.publish.assert_not_called()
+    publisher.enqueue.assert_not_called()
 
 
 @pytest.mark.parametrize('field,value', [('event_id', 'patient-name'), ('reference_id', 'P-123'),
@@ -128,7 +129,7 @@ def test_invalid_metadata(setup, field, value):
     body = payload()
     body['message'][field] = value
     assert send(client, body).status_code in (400, 403)
-    publisher.publish.assert_not_called()
+    publisher.enqueue.assert_not_called()
 
 
 @pytest.mark.parametrize('policy', ['{}', '[]', '{', '{"x":{"secret":"short"}}'])
@@ -136,7 +137,7 @@ def test_missing_or_bad_policy_fails_closed(setup, policy):
     client, publisher, app = setup
     app.config['EVENT_BUS_PRODUCERS'] = policy
     assert send(client).status_code == 503
-    publisher.publish.assert_not_called()
+    publisher.enqueue.assert_not_called()
 
 
 def test_payload_limit(setup):
@@ -144,12 +145,12 @@ def test_payload_limit(setup):
     body = payload()
     body['message']['extra'] = 'a' * 9000
     assert send(client, body).status_code == 413
-    publisher.publish.assert_not_called()
+    publisher.enqueue.assert_not_called()
 
 
 def test_transport_failure_does_not_leak_credentials(setup, caplog):
     client, publisher, _ = setup
-    publisher.publish.side_effect = PublishUnavailable('sensitive-upstream-url')
+    publisher.enqueue.side_effect = OutboxUnavailable('sensitive-upstream-url')
     response = send(client)
     assert response.status_code == 503
     assert 'sensitive-upstream-url' not in response.text + caplog.text

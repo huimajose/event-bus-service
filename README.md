@@ -1,91 +1,85 @@
-# OSIE Event Bus — publisher gate
+# OSIE Event Bus — durable notification publisher
 
-Authenticated server-to-server PubNub publishing. This phase protects the publisher;
-it does not provide a durable outbox/inbox, retries, deduplication, consumer access
-grants or hospital integration. Do not certify delivery from a publish acknowledgement.
+POST /publish authenticates producers, validates minimal metadata and persists in
+DBM before returning 202. A separate worker publishes the saved event to PubNub.
+No direct PostgreSQL connection, inline publication fallback or clinical payload.
 
-## Run
+## Prerequisites and run
 
-Install requirements.txt and start `gunicorn app:app --bind 0.0.0.0:$PORT`.
-GET /health is liveness only. Without a valid producer policy, POST /publish returns
-503. Debug mode and automatic loading of a repository .env are disabled.
+Requires database-manager-service PR #78 and migration
+`deploy/sql/025_pubnub_notification_outbox.sql`. Apply through the normal migration
+process before enabling this version. Configure DATABASE_MANAGER_URL as the DBM
+HTTPS origin, plus EVENT_BUS_OUTBOX_SECRET (same dedicated random secret >=32 bytes
+in DBM and bus, distinct from producer/Auth/PubNub keys).
 
-Set PUBNUB_PUBLISH_KEY and PUBNUB_SUBSCRIBE_KEY through the platform secret store.
-If Access Manager is enabled, supply the narrowly scoped PUBNUB_AUTH_KEY granted
-by the administrator. This service does not provision PubNub access grants.
-The publisher does not need the PubNub administrative secret key.
+Install requirements.txt. Web: `gunicorn app:app --bind 0.0.0.0:$PORT`.
+Worker: `python worker.py` separately; `python worker.py --once` attempts one claim.
+SIGTERM stops claiming after the current attempt. GET /health is liveness only.
 
-EVENT_BUS_PRODUCERS is a JSON object configured as a secret, for example:
+Set PUBNUB_PUBLISH_KEY/PUBNUB_SUBSCRIBE_KEY through the platform secret store.
+If Access Manager is enabled, provision restricted PUBNUB_AUTH_KEY externally.
+No administrative PubNub secret key is used. TLS and 3/5s SDK timeouts are enabled.
 
-```json
-{
-  "hospital-hml": {
-    "secret": "REPLACE_WITH_UNIQUE_RANDOM_SECRET_OF_AT_LEAST_32_BYTES",
-    "organization_id": "HOSPITAL-MUNICIPAL-LUBANGO",
-    "channels": ["osie.network.osie-demo.organization.hcl.events"],
-    "event_types": ["clinical.access.requested"]
-  }
-}
-```
-
-The example is not a credential. Provision a separate random secret for each
-producer; use a separate environment/keyset for tests. Empty or invalid policies
-fail closed. A channel is an exact match, not a wildcard. Administrators must
-assign channels only after verifying the institution's network membership.
-Policies are static for this phase; no live registry/membership lookup exists yet.
-
-JWT contract: HS256 using the producer's own secret; sub identifies the producer;
-iss=EVENT_BUS_ISSUER (default osie-services), aud=osie-event-bus,
-actor_type=service, token_kind=service_access, scopes includes events.publish,
-iat/exp integer seconds and positive lifetime <=300 seconds, nonempty jti.
-The unverified sub selects a key only; all authorization follows signature checks.
-JWT replay prevention is not yet implemented: jti is required but not stored.
-
-## Publish
-
-POST /publish with Authorization: Bearer <service JWT> and JSON:
+EVENT_BUS_PRODUCERS is secret JSON, for example (not a credential):
 
 ```json
-{
-  "channel": "osie.network.osie-demo.organization.hcl.events",
-  "message": {
-    "event_id": "04d633de-5de5-49bd-8cc1-b521f1edb0fa",
-    "event_type": "clinical.access.requested",
-    "reference_id": "be80e22e-0e98-4470-a4cf-8530a9a247ff",
-    "occurred_at": "2026-10-24T08:00:00Z"
-  }
-}
+{"hospital-hml":{"secret":"REPLACE_WITH_UNIQUE_RANDOM_SECRET_OF_AT_LEAST_32_BYTES","organization_id":"HOSPITAL-MUNICIPAL-LUBANGO","channels":["osie.network.osie-demo.organization.hcl.events"],"event_types":["clinical.access.requested"]}}
 ```
 
-Only event_id, event_type, reference_id and occurred_at are accepted inside
-message. UUIDs must be canonical; occurred_at includes timezone. The server adds
-schema_version=1, producer and source_organization_id from its verified policy.
-Allowed event types are clinical.access.requested/approved/rejected and
-clinical.delivery.available/received; each producer also needs its own allowlist.
-Names, contacts, patient identifiers, clinical payloads, arbitrary URLs and extra
-fields are rejected. Consumers must resolve references through authorized APIs;
-an event is never a clinical access grant or proof that a transition happened.
+Assign exact channels only after checking membership; no wildcards or live registry
+lookup. Use individual producer secrets. Restart web AND worker for policy updates.
+Worker rechecks its effective policy on each attempt; config changes are not live.
 
-200 published means PubNub acknowledged the publish and returned a timetoken.
-401 rejects credentials; 403 rejects channels/types; 400 rejects schema; 413 rejects
-bodies over 8 KiB; 503 means configuration or publish unavailable. Failure responses
-never expose SDK errors or credentials. A timeout can occur after an actual publish;
-callers must retain event_id for eventual consumer deduplication, not generate a new
-ID on every retry. There is no persistent retry guarantee in this phase.
+Producer JWT: HS256, sub=policy key, iss=EVENT_BUS_ISSUER (default osie-services),
+aud=osie-event-bus, actor_type=service, token_kind=service_access,
+scopes includes events.publish, integer iat/exp, positive lifetime <=300s, nonempty
+jti. Only the signature-verified identity is authorized. jti is not persisted.
+DBM uses a separate short-lived credential, audience osie-dbm-outbox and scope
+ events.outbox; producer JWTs never grant DBM access.
 
-Existing anonymous /publish callers must migrate to this contract. Legacy generic
-channels and raw message forwarding are no longer supported. The old subscriber
-and direct publisher examples were retired. Audit entries currently use platform
-logs and include technical identifiers only; durable audit remains pending.
+## Event contract
 
-## Tests and rollout
+POST /publish with Authorization: Bearer <service JWT> and this strict JSON shape:
 
-Run `python -m pytest tests -q` with pytest installed. Tests use synthetic credentials,
-fake transport and no clinical data. CI runs the same suite. Real PubNub, Access
-Manager grants, multi-instance load and authenticated hospital smoke remain required.
-Do not deploy until producer policies and consumer permissions are provisioned.
+```json
+{"channel":"osie.network.osie-demo.organization.hcl.events","message":{"event_id":"04d633de-5de5-49bd-8cc1-b521f1edb0fa","event_type":"clinical.access.requested","reference_id":"be80e22e-0e98-4470-a4cf-8530a9a247ff","occurred_at":"2026-10-24T08:00:00Z"}}
+```
 
-The repository previously tracked .env and bytecode; this change removes them from
-the new tree. It does not remove history or rotate credentials. Treat any genuine
-credentials previously committed as requiring review and rotation before rollout.
-No existing secret values were read or copied for this change.
+No extras. Canonical UUIDs and timestamp with timezone required. Event types:
+clinical.access.requested/approved/rejected, clinical.delivery.available/received,
+also restricted by producer. Server adds schema_version=1, producer and
+source_organization_id from policy. No names, contacts, patient IDs, FHIR resources
+or arbitrary URLs. Consumers resolve references through authorized APIs. An event
+is never a clinical access grant or proof of a domain transition.
+
+202 accepted means DBM COMMITTED, returning event_id and state. Same ID and canonical
+content returns existing state, including PUBLISHED/DEAD_LETTER; changed content is
+409. No resetting on re-enqueue. Retain all event fields across retries.
+401 credential, 403 channel/type, 400 schema, 413 >8 KiB, 503 configuration/storage.
+No persistence failure falls back to untracked publication.
+
+Worker claims with a 60-second fenced lease. Only its current unexpired token can
+ACK. Retry backoff is 2^attempt seconds, cap 300; eighth failure or expired eighth
+claim becomes DEAD_LETTER. Expired earlier claims recover automatically. PubNub
+acceptance followed by lost DBM ACK may republish the SAME event_id: at-least-once,
+not exactly-once. PUBLISHED is PubNub ack, not hospital receipt. Consumers still
+require durable inbox/deduplication before effects. No automatic record deletion.
+
+## Validation and rollout
+
+Run `python -m pytest tests -q` with pytest installed. DBM has separate API and
+Postgres-16 integration tests. No actual PubNub publish is performed in unit tests.
+SDK initialization uses synthetic keys. This does not certify the clinical flow.
+
+Before deploy: apply migration, configure dedicated secrets and origin, approve
+producer policy/PubNub grants, review historical credentials, start DBM then bus web
+and worker. No .env autoload/debug. Previously versioned .env/bytecode are removed
+from the new tree, not history. Secret values were not read for these changes.
+
+Still pending: transactional outbox at the clinical producer, consumer inbox and
+permissions, hospital/portal integration, durable audit, capacity/rate limiting,
+retention and administrative DLQ replay. Existing rejected payloads remain rejected.
+
+Rollback: stop the worker and preserve its table. Prefer secured phase-1 code over
+the original anonymous publisher. Phase 1 changes HTTP semantics back to synchronous
+publish and does not drain the queue. Never drop retained events or reset IDs.

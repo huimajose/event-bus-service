@@ -11,3 +11,5 @@ class Config:
     PUBNUB_SUBSCRIBE_KEY = os.getenv('PUBNUB_SUBSCRIBE_KEY')
     PUBNUB_AUTH_KEY = os.getenv('PUBNUB_AUTH_KEY')
     PUBNUB_USER_ID = 'osie-event-bus-service'
+    DATABASE_MANAGER_URL = os.getenv('DATABASE_MANAGER_URL')
+    EVENT_BUS_OUTBOX_SECRET = os.getenv('EVENT_BUS_OUTBOX_SECRET')
