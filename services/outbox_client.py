@@ -30,6 +30,7 @@ class OutboxClient:
         try:
             response = requests.post(self.base_url + '/api/v1/pubnub-outbox/' + action,
                                      json=payload, timeout=(3, 5),
+                                     allow_redirects=False,
                                      headers={'Authorization': 'Bearer ' + token})
             if response.status_code == 409:
                 raise OutboxConflict()

@@ -114,6 +114,7 @@ def test_dbm_client_uses_dedicated_signed_credential(monkeypatch):
         assert claims['scopes'] == ['events.outbox']
         assert claims['exp'] - claims['iat'] == 60
         assert kwargs['timeout'] == (3, 5)
+        assert kwargs['allow_redirects'] is False
         return Mock(status_code=200, json=lambda: {'event': None})
     monkeypatch.setattr(requests, 'post', post)
     assert client().claim() is None
